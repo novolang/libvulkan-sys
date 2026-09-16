@@ -1,0 +1,455 @@
+// The C entry points of the Vulkan loader, one novo-lang declaration
+// each.
+//
+// A handle is an `Int`.  Vulkan has two kinds: a dispatchable handle —
+// the instance, the physical device, the logical device, a queue and a
+// command buffer — is a pointer, and a non-dispatchable handle — a
+// buffer, a device memory allocation, a command pool, a fence and a
+// semaphore — is a 64-bit number.  Both fit an `Int`, and zero is
+// `VK_NULL_HANDLE`.
+//
+// An out-parameter is the address of a slot the caller owns.  Every
+// call that produces a handle writes it into one, because what comes
+// back is the result code instead.  `ptr.alloc_word` reserves a slot
+// and `ptr.read_word` reads it back.
+//
+// EVERY ARGUMENT THAT IS NOT A HANDLE OR A NUMBER IS A STRUCTURE THE
+// CALLER LAYS OUT BY HAND.  Vulkan passes and returns nothing by
+// value: a creation call takes the address of a create-info record and
+// a query call takes the address of a record to fill in.  A record
+// begins with a four-byte structure type and, after four bytes of
+// padding, an eight-byte pointer to the next record in a chain.  The
+// README's "The rules a user needs" section carries the layout of
+// every record this package's entry points take, for the `x86_64`
+// System V layout the loader is compiled to.
+//
+// `ptr.alloc` does not clear the bytes it reserves, and a create-info
+// record must be zero apart from the fields the caller sets.  Write
+// every eight-byte word of a record before the call, including the
+// ones that stay zero.
+//
+// A result code is a signed 32-bit value and a failure is NEGATIVE, so
+// bind the answer to a local with `as i32` before comparing it with
+// zero.  0 is `VK_SUCCESS`.
+//
+// A queue priority is a 32-bit float in an array behind a pointer.
+// `ptr.write_f32` writes one.  No entry point here takes or answers a
+// float directly, which is why the whole surface is expressible: an
+// `@ffi` declaration's `Float` is a C `double` and could not be used
+// for one.
+//
+// Every entry point carries `[io, ffi]`.  The loader dispatches into a
+// device driver, and a driver is a device.
+//
+// The allocation callbacks are absent.  Every call that takes a
+// `VkAllocationCallbacks *` takes it as an `Int` here, and the only
+// value a novo-lang program can pass is 0, which selects the driver's
+// own allocator: the structure's members are C FUNCTION POINTERS.
+// `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr` are here, and what
+// they answer is an address a novo-lang program cannot call.  The
+// README's "What is not included" section lists the rest.
+
+// Get the highest Vulkan version the loader supports.
+//
+// `p_api_version` is the address of a slot receiving a packed version:
+// the major version in the top ten bits, the minor in the next ten and
+// the patch in the low twelve.  Answers 0.
+pub @ffi(library = "vulkan", symbol = "vkEnumerateInstanceVersion")
+fn vk_enumerate_instance_version(p_api_version: Int) -> Int [io, ffi]
+
+// List the instance extensions an implementation or a layer offers.
+//
+// `p_layer_name` is the ADDRESS of a string, and 0 asks for the
+// implementation's own extensions.  With `p_properties` 0 the count is
+// written into the slot at `p_property_count` and nothing else
+// happens; with a buffer, at most that many 260-byte records are
+// written.  Answers 0, 5 when the buffer was too small, and -6 when
+// the layer is not installed.
+pub @ffi(library = "vulkan", symbol = "vkEnumerateInstanceExtensionProperties")
+fn vk_enumerate_instance_extension_properties(p_layer_name: Int, p_property_count: Int,
+                                              p_properties: Int) -> Int [io, ffi]
+
+// List the layers installed on the machine.
+//
+// The two-call shape is that of
+// `vkEnumerateInstanceExtensionProperties`, with 520-byte records.
+pub @ffi(library = "vulkan", symbol = "vkEnumerateInstanceLayerProperties")
+fn vk_enumerate_instance_layer_properties(p_property_count: Int, p_properties: Int) -> Int [io, ffi]
+
+// Create a Vulkan instance.
+//
+// `p_create_info` is the address of a 64-byte record, `p_allocator` is
+// 0 and `p_instance` is the address of a slot the handle is written
+// into.  Answers -9 when the requested version is not supported, -7
+// when an extension is not there and -6 when a layer is not.
+pub @ffi(library = "vulkan", symbol = "vkCreateInstance")
+fn vk_create_instance(p_create_info: Int, p_allocator: Int, p_instance: Int) -> Int [io, ffi]
+
+// Release an instance.
+//
+// Every device created from it must be released first.
+pub @ffi(library = "vulkan", symbol = "vkDestroyInstance")
+fn vk_destroy_instance(instance: Int, p_allocator: Int) [io, ffi]
+
+// Get the address of an instance-level entry point.
+//
+// Answers 0 when the name is not one the loader or the enabled
+// extensions carry.  A novo-lang program cannot call the address it
+// answers, so this call is here to TEST whether an extension's entry
+// point exists and not to reach it.
+pub @ffi(library = "vulkan", symbol = "vkGetInstanceProcAddr")
+fn vk_get_instance_proc_addr(instance: Int, p_name: Str) -> Int [io, ffi]
+
+// List the physical devices an instance can see.
+//
+// The two-call shape is that of the extension list, with eight-byte
+// handles rather than records.  A machine with no driver answers 0
+// with a count of 0, which is not a failure.
+pub @ffi(library = "vulkan", symbol = "vkEnumeratePhysicalDevices")
+fn vk_enumerate_physical_devices(instance: Int, p_physical_device_count: Int,
+                                 p_physical_devices: Int) -> Int [io, ffi]
+
+// Read a physical device's properties into a caller-owned record.
+//
+// `p_properties` is the address of 824 bytes.  The first five
+// four-byte fields are the supported API version, the driver version,
+// the vendor identifier, the device identifier and the device type,
+// and the device name is a 256-byte null-terminated string at offset
+// 20.
+pub @ffi(library = "vulkan", symbol = "vkGetPhysicalDeviceProperties")
+fn vk_get_physical_device_properties(physical_device: Int, p_properties: Int) [io, ffi]
+
+// Read a physical device's optional features into a caller-owned
+// record.
+//
+// `p_features` is the address of 220 bytes, which is 55 four-byte
+// flags, each 1 when the device has that feature.  The same record is
+// what a device creation asks for.
+pub @ffi(library = "vulkan", symbol = "vkGetPhysicalDeviceFeatures")
+fn vk_get_physical_device_features(physical_device: Int, p_features: Int) [io, ffi]
+
+// Read a physical device's memory types and heaps into a caller-owned
+// record.
+//
+// `p_memory_properties` is the address of 520 bytes: a four-byte type
+// count, then 32 eight-byte types of a property flag and a heap index,
+// then a four-byte heap count at offset 260, then 16 sixteen-byte
+// heaps of a size and a flag at offset 264.
+pub @ffi(library = "vulkan", symbol = "vkGetPhysicalDeviceMemoryProperties")
+fn vk_get_physical_device_memory_properties(physical_device: Int,
+                                            p_memory_properties: Int) [io, ffi]
+
+// List a physical device's queue families.
+//
+// The two-call shape is that of the extension list, with 24-byte
+// records: the capability flags, the number of queues, the timestamp
+// width and a three-value transfer granularity.  This call CANNOT
+// fail and answers nothing.
+pub @ffi(library = "vulkan", symbol = "vkGetPhysicalDeviceQueueFamilyProperties")
+fn vk_get_physical_device_queue_family_properties(physical_device: Int,
+                                                  p_queue_family_property_count: Int,
+                                                  p_queue_family_properties: Int) [io, ffi]
+
+// Read what a physical device can do with one image format.
+//
+// `p_format_properties` is the address of 12 bytes: the features
+// supported for a linear image, for an optimal image and for a buffer.
+pub @ffi(library = "vulkan", symbol = "vkGetPhysicalDeviceFormatProperties")
+fn vk_get_physical_device_format_properties(physical_device: Int, format: Int,
+                                            p_format_properties: Int) [io, ffi]
+
+// List the extensions a physical device offers.
+//
+// The arguments after the device are those of
+// `vkEnumerateInstanceExtensionProperties`.
+pub @ffi(library = "vulkan", symbol = "vkEnumerateDeviceExtensionProperties")
+fn vk_enumerate_device_extension_properties(physical_device: Int, p_layer_name: Int,
+                                            p_property_count: Int,
+                                            p_properties: Int) -> Int [io, ffi]
+
+// Create a logical device over a physical one.
+//
+// `p_create_info` is the address of a 72-byte record naming the queue
+// families to open.  The device is what everything below is created
+// from, and it is released before the instance.
+pub @ffi(library = "vulkan", symbol = "vkCreateDevice")
+fn vk_create_device(physical_device: Int, p_create_info: Int, p_allocator: Int,
+                    p_device: Int) -> Int [io, ffi]
+
+// Release a logical device.
+//
+// Everything created from it must be released first, and the device
+// must be idle.
+pub @ffi(library = "vulkan", symbol = "vkDestroyDevice")
+fn vk_destroy_device(device: Int, p_allocator: Int) [io, ffi]
+
+// Get the address of a device-level entry point.
+//
+// Answers 0 when the name is not one the device's enabled extensions
+// carry.  As with `vkGetInstanceProcAddr`, the address is one a
+// novo-lang program cannot call.
+pub @ffi(library = "vulkan", symbol = "vkGetDeviceProcAddr")
+fn vk_get_device_proc_addr(device: Int, p_name: Str) -> Int [io, ffi]
+
+// Get one of the queues a device was created with.
+//
+// `queue_family_index` and `queue_index` must name a queue the device
+// creation asked for.  `p_queue` is the address of a slot.  A queue is
+// owned by the device and is never released.
+pub @ffi(library = "vulkan", symbol = "vkGetDeviceQueue")
+fn vk_get_device_queue(device: Int, queue_family_index: Int, queue_index: Int,
+                       p_queue: Int) [io, ffi]
+
+// Submit command buffers to a queue.
+//
+// `p_submits` is the address of `submit_count` 72-byte records, each
+// naming the semaphores to wait on, the command buffers to run and the
+// semaphores to signal.  `fence` is signalled when the work is done,
+// or 0 for none.
+pub @ffi(library = "vulkan", symbol = "vkQueueSubmit")
+fn vk_queue_submit(queue: Int, submit_count: Int, p_submits: Int, fence: Int) -> Int [io, ffi]
+
+// Wait until a queue has finished everything submitted to it.
+pub @ffi(library = "vulkan", symbol = "vkQueueWaitIdle")
+fn vk_queue_wait_idle(queue: Int) -> Int [io, ffi]
+
+// Wait until every queue of a device has finished.
+//
+// This is the call before releasing a device.
+pub @ffi(library = "vulkan", symbol = "vkDeviceWaitIdle")
+fn vk_device_wait_idle(device: Int) -> Int [io, ffi]
+
+// Allocate device memory.
+//
+// `p_allocate_info` is the address of a 32-byte record holding the
+// size and the memory type index.  The type index comes from
+// `vkGetPhysicalDeviceMemoryProperties`, and it must be one the
+// resource's memory requirements allow.  Answers -2 when the device is
+// out of memory.
+pub @ffi(library = "vulkan", symbol = "vkAllocateMemory")
+fn vk_allocate_memory(device: Int, p_allocate_info: Int, p_allocator: Int,
+                      p_memory: Int) -> Int [io, ffi]
+
+// Release device memory.
+//
+// Every resource bound to it must be released first, and it must not
+// be mapped.
+pub @ffi(library = "vulkan", symbol = "vkFreeMemory")
+fn vk_free_memory(device: Int, memory: Int, p_allocator: Int) [io, ffi]
+
+// Map device memory into the process's address space.
+//
+// `size` may be -1 for "to the end of the allocation".  `pp_data` is
+// the address of a slot the mapped address is written into, and the
+// bytes there are read and written with the `ptr` module.  The memory
+// type must carry the host-visible flag.
+pub @ffi(library = "vulkan", symbol = "vkMapMemory")
+fn vk_map_memory(device: Int, memory: Int, offset: Int, size: Int, flags: Int,
+                 pp_data: Int) -> Int [io, ffi]
+
+// Unmap device memory.
+//
+// The address the mapping gave stops being valid.
+pub @ffi(library = "vulkan", symbol = "vkUnmapMemory")
+fn vk_unmap_memory(device: Int, memory: Int) [io, ffi]
+
+// Make writes to mapped memory visible to the device.
+//
+// `p_memory_ranges` is the address of `memory_range_count` 40-byte
+// records.  Memory whose type carries the host-coherent flag needs no
+// flush, and the call is then allowed and does nothing.
+pub @ffi(library = "vulkan", symbol = "vkFlushMappedMemoryRanges")
+fn vk_flush_mapped_memory_ranges(device: Int, memory_range_count: Int,
+                                 p_memory_ranges: Int) -> Int [io, ffi]
+
+// Make the device's writes visible through a mapping.
+//
+// The arguments are those of `vkFlushMappedMemoryRanges`, in the other
+// direction.
+pub @ffi(library = "vulkan", symbol = "vkInvalidateMappedMemoryRanges")
+fn vk_invalidate_mapped_memory_ranges(device: Int, memory_range_count: Int,
+                                      p_memory_ranges: Int) -> Int [io, ffi]
+
+// Get how much of a lazily allocated block the device has committed.
+//
+// `p_committed_memory_in_bytes` is the address of an eight-byte slot.
+// For memory that is not lazily allocated the answer is the whole
+// size.
+pub @ffi(library = "vulkan", symbol = "vkGetDeviceMemoryCommitment")
+fn vk_get_device_memory_commitment(device: Int, memory: Int,
+                                   p_committed_memory_in_bytes: Int) [io, ffi]
+
+// Create a buffer.
+//
+// `p_create_info` is the address of a 56-byte record holding the size
+// in bytes, a usage bit set and a sharing mode.  A buffer has no
+// memory until `vkBindBufferMemory` gives it some.
+pub @ffi(library = "vulkan", symbol = "vkCreateBuffer")
+fn vk_create_buffer(device: Int, p_create_info: Int, p_allocator: Int,
+                    p_buffer: Int) -> Int [io, ffi]
+
+// Release a buffer.
+//
+// The memory it was bound to is not released with it.
+pub @ffi(library = "vulkan", symbol = "vkDestroyBuffer")
+fn vk_destroy_buffer(device: Int, buffer: Int, p_allocator: Int) [io, ffi]
+
+// Read what memory a buffer needs into a caller-owned record.
+//
+// `p_memory_requirements` is the address of 24 bytes: the size the
+// device wants, which is at least the size asked for, the alignment
+// its offset must be a multiple of, and a bit set of the memory types
+// that will do.
+pub @ffi(library = "vulkan", symbol = "vkGetBufferMemoryRequirements")
+fn vk_get_buffer_memory_requirements(device: Int, buffer: Int, p_memory_requirements: Int) [io, ffi]
+
+// Give a buffer its memory.
+//
+// `memory_offset` must be a multiple of the alignment the memory
+// requirements reported, and it is how several buffers share one
+// allocation.  A buffer is bound once and never rebound.
+pub @ffi(library = "vulkan", symbol = "vkBindBufferMemory")
+fn vk_bind_buffer_memory(device: Int, buffer: Int, memory: Int, memory_offset: Int) -> Int [io, ffi]
+
+// Create a command pool.
+//
+// `p_create_info` is the address of a 24-byte record holding a flag
+// set and the queue family the pool's command buffers may be submitted
+// to.  Flag 2 lets a command buffer be reset on its own.
+pub @ffi(library = "vulkan", symbol = "vkCreateCommandPool")
+fn vk_create_command_pool(device: Int, p_create_info: Int, p_allocator: Int,
+                          p_command_pool: Int) -> Int [io, ffi]
+
+// Release a command pool, and every command buffer allocated from it.
+pub @ffi(library = "vulkan", symbol = "vkDestroyCommandPool")
+fn vk_destroy_command_pool(device: Int, command_pool: Int, p_allocator: Int) [io, ffi]
+
+// Reset every command buffer a pool allocated.
+//
+// Flag 1 also returns the pool's memory to the device.  No command
+// buffer from the pool may be executing.
+pub @ffi(library = "vulkan", symbol = "vkResetCommandPool")
+fn vk_reset_command_pool(device: Int, command_pool: Int, flags: Int) -> Int [io, ffi]
+
+// Allocate command buffers from a pool.
+//
+// `p_allocate_info` is the address of a 32-byte record holding the
+// pool, the level — 0 for a primary buffer — and the count.
+// `p_command_buffers` is the address of that many eight-byte slots.
+pub @ffi(library = "vulkan", symbol = "vkAllocateCommandBuffers")
+fn vk_allocate_command_buffers(device: Int, p_allocate_info: Int,
+                               p_command_buffers: Int) -> Int [io, ffi]
+
+// Return command buffers to their pool.
+//
+// `p_command_buffers` is the address of an array of handles.
+pub @ffi(library = "vulkan", symbol = "vkFreeCommandBuffers")
+fn vk_free_command_buffers(device: Int, command_pool: Int, command_buffer_count: Int,
+                           p_command_buffers: Int) [io, ffi]
+
+// Start recording into a command buffer.
+//
+// `p_begin_info` is the address of a 32-byte record whose flag set is
+// 1 for a buffer that will be submitted once.  Every `vkCmd` call
+// between this and `vkEndCommandBuffer` records rather than executes.
+pub @ffi(library = "vulkan", symbol = "vkBeginCommandBuffer")
+fn vk_begin_command_buffer(command_buffer: Int, p_begin_info: Int) -> Int [io, ffi]
+
+// Finish recording into a command buffer.
+//
+// An error here is where a malformed recording is reported, not at the
+// `vkCmd` call that caused it.
+pub @ffi(library = "vulkan", symbol = "vkEndCommandBuffer")
+fn vk_end_command_buffer(command_buffer: Int) -> Int [io, ffi]
+
+// Empty a command buffer so it can be recorded again.
+//
+// The pool it came from must have been created with flag 2.
+pub @ffi(library = "vulkan", symbol = "vkResetCommandBuffer")
+fn vk_reset_command_buffer(command_buffer: Int, flags: Int) -> Int [io, ffi]
+
+// Record a copy from one buffer to another.
+//
+// `p_regions` is the address of `region_count` 24-byte records, each a
+// source offset, a destination offset and a length.
+pub @ffi(library = "vulkan", symbol = "vkCmdCopyBuffer")
+fn vk_cmd_copy_buffer(command_buffer: Int, src_buffer: Int, dst_buffer: Int, region_count: Int,
+                      p_regions: Int) [io, ffi]
+
+// Record a fill of a buffer with one repeated four-byte value.
+//
+// `dst_offset` and `size` must both be multiples of four, and `size`
+// may be -1 for "to the end of the buffer".
+pub @ffi(library = "vulkan", symbol = "vkCmdFillBuffer")
+fn vk_cmd_fill_buffer(command_buffer: Int, dst_buffer: Int, dst_offset: Int, size: Int,
+                      data: Int) [io, ffi]
+
+// Record a write of up to 65536 bytes into a buffer.
+//
+// The bytes are copied into the command buffer at record time, so
+// `p_data` need not outlive this call.  `data_size` must be a multiple
+// of four.
+pub @ffi(library = "vulkan", symbol = "vkCmdUpdateBuffer")
+fn vk_cmd_update_buffer(command_buffer: Int, dst_buffer: Int, dst_offset: Int, data_size: Int,
+                        p_data: Int) [io, ffi]
+
+// Record a barrier between two stages of the pipeline.
+//
+// The three counts and the three addresses are the global barriers,
+// the buffer barriers and the image barriers; a global barrier is a
+// 24-byte record and a buffer barrier a 56-byte one.  This is how a
+// program says that what one stage wrote the next stage may read.
+pub @ffi(library = "vulkan", symbol = "vkCmdPipelineBarrier")
+fn vk_cmd_pipeline_barrier(command_buffer: Int, src_stage_mask: Int, dst_stage_mask: Int,
+                           dependency_flags: Int, memory_barrier_count: Int, p_memory_barriers: Int,
+                           buffer_memory_barrier_count: Int, p_buffer_memory_barriers: Int,
+                           image_memory_barrier_count: Int, p_image_memory_barriers: Int) [io, ffi]
+
+// Create a fence.
+//
+// `p_create_info` is the address of a 24-byte record whose flag set is
+// 1 for a fence that starts signalled.  A fence is how the host learns
+// that the device has finished.
+pub @ffi(library = "vulkan", symbol = "vkCreateFence")
+fn vk_create_fence(device: Int, p_create_info: Int, p_allocator: Int, p_fence: Int) -> Int [io, ffi]
+
+// Release a fence.
+pub @ffi(library = "vulkan", symbol = "vkDestroyFence")
+fn vk_destroy_fence(device: Int, fence: Int, p_allocator: Int) [io, ffi]
+
+// Wait for fences to be signalled.
+//
+// `p_fences` is the address of an array of handles, `wait_all` is 1
+// for all of them and 0 for any, and `timeout` is in nanoseconds.
+// Answers 0 when the wait succeeded and 2, `VK_TIMEOUT`, when it ran
+// out of time, which is NOT an error.
+pub @ffi(library = "vulkan", symbol = "vkWaitForFences")
+fn vk_wait_for_fences(device: Int, fence_count: Int, p_fences: Int, wait_all: Int,
+                      timeout: Int) -> Int [io, ffi]
+
+// Put fences back to unsignalled.
+//
+// A fence is reset by the host and signalled by the device, never the
+// other way round.
+pub @ffi(library = "vulkan", symbol = "vkResetFences")
+fn vk_reset_fences(device: Int, fence_count: Int, p_fences: Int) -> Int [io, ffi]
+
+// Ask whether a fence is signalled.
+//
+// Answers 0 when it is and 1, `VK_NOT_READY`, when it is not.  Neither
+// is an error.
+pub @ffi(library = "vulkan", symbol = "vkGetFenceStatus")
+fn vk_get_fence_status(device: Int, fence: Int) -> Int [io, ffi]
+
+// Create a semaphore.
+//
+// `p_create_info` is the address of a 24-byte record.  A semaphore
+// orders work between queues on the device, where a fence orders it
+// between the device and the host.
+pub @ffi(library = "vulkan", symbol = "vkCreateSemaphore")
+fn vk_create_semaphore(device: Int, p_create_info: Int, p_allocator: Int,
+                       p_semaphore: Int) -> Int [io, ffi]
+
+// Release a semaphore.
+pub @ffi(library = "vulkan", symbol = "vkDestroySemaphore")
+fn vk_destroy_semaphore(device: Int, semaphore: Int, p_allocator: Int) [io, ffi]

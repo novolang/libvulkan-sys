@@ -1,0 +1,611 @@
+// API tests for the Vulkan loader bindings.
+//
+// Every test below calls into the C library, so the suite needs the
+// Vulkan loader installed and linked.  `novo pkg build` type-checks the
+// declarations without it; `novo test` runs them and does not.
+//
+// The loader is always there once the library is; a DRIVER may not be.
+// Every test that needs a physical device asks for the count first and
+// stops when it is zero, so the suite passes on a machine with no GPU
+// as well as on one with a GPU.  Nothing here reads or writes a file,
+// and nothing needs privileges.
+
+use std.test
+use libvulkan
+
+// The structure type numbers of the records this suite lays out.
+const TYPE_APPLICATION_INFO: Int = 0
+const TYPE_INSTANCE_CREATE_INFO: Int = 1
+const TYPE_DEVICE_QUEUE_CREATE_INFO: Int = 2
+const TYPE_DEVICE_CREATE_INFO: Int = 3
+const TYPE_SUBMIT_INFO: Int = 4
+const TYPE_MEMORY_ALLOCATE_INFO: Int = 5
+const TYPE_MAPPED_MEMORY_RANGE: Int = 6
+const TYPE_FENCE_CREATE_INFO: Int = 8
+const TYPE_SEMAPHORE_CREATE_INFO: Int = 9
+const TYPE_BUFFER_CREATE_INFO: Int = 12
+const TYPE_MEMORY_BARRIER: Int = 46
+const TYPE_COMMAND_POOL_CREATE_INFO: Int = 39
+const TYPE_COMMAND_BUFFER_ALLOCATE_INFO: Int = 40
+const TYPE_COMMAND_BUFFER_BEGIN_INFO: Int = 42
+
+// The sizes of the records this suite lays out or reads.
+const APPLICATION_INFO_SIZE: Int = 48
+const INSTANCE_CREATE_INFO_SIZE: Int = 64
+const DEVICE_QUEUE_CREATE_INFO_SIZE: Int = 40
+const DEVICE_CREATE_INFO_SIZE: Int = 72
+const SUBMIT_INFO_SIZE: Int = 72
+const MEMORY_ALLOCATE_INFO_SIZE: Int = 32
+const MAPPED_MEMORY_RANGE_SIZE: Int = 40
+const FENCE_CREATE_INFO_SIZE: Int = 24
+const SEMAPHORE_CREATE_INFO_SIZE: Int = 24
+const BUFFER_CREATE_INFO_SIZE: Int = 56
+const MEMORY_BARRIER_SIZE: Int = 24
+const COMMAND_POOL_CREATE_INFO_SIZE: Int = 24
+const COMMAND_BUFFER_ALLOCATE_INFO_SIZE: Int = 32
+const COMMAND_BUFFER_BEGIN_INFO_SIZE: Int = 32
+const PHYSICAL_DEVICE_PROPERTIES_SIZE: Int = 824
+const PHYSICAL_DEVICE_FEATURES_SIZE: Int = 220
+const MEMORY_PROPERTIES_SIZE: Int = 520
+const QUEUE_FAMILY_PROPERTIES_SIZE: Int = 24
+const FORMAT_PROPERTIES_SIZE: Int = 12
+const MEMORY_REQUIREMENTS_SIZE: Int = 24
+const BUFFER_COPY_SIZE: Int = 24
+const EXTENSION_PROPERTIES_SIZE: Int = 260
+const LAYER_PROPERTIES_SIZE: Int = 520
+
+// `VK_SUCCESS`.
+const SUCCESS: Int = 0
+
+// `VK_NOT_READY`, which a fence that has not been signalled answers.
+const NOT_READY: Int = 1
+
+// `VK_ERROR_LAYER_NOT_PRESENT`.
+const ERROR_LAYER_NOT_PRESENT: Int = -6
+
+// `VK_API_VERSION_1_0`, the major version in the top ten bits.
+const API_VERSION_1_0: Int = 4194304
+
+// `VK_QUEUE_TRANSFER_BIT`.
+const QUEUE_TRANSFER: Int = 4
+
+// `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT` and
+// `VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.
+const MEMORY_HOST_VISIBLE: Int = 2
+const MEMORY_HOST_COHERENT: Int = 4
+
+// `VK_BUFFER_USAGE_TRANSFER_SRC_BIT` and
+// `VK_BUFFER_USAGE_TRANSFER_DST_BIT`.
+const BUFFER_TRANSFER_SRC: Int = 1
+const BUFFER_TRANSFER_DST: Int = 2
+
+// `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT`.
+const POOL_RESET_COMMAND_BUFFER: Int = 2
+
+// `VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT`.
+const ONE_TIME_SUBMIT: Int = 1
+
+// `VK_PIPELINE_STAGE_TRANSFER_BIT`.
+const STAGE_TRANSFER: Int = 4096
+
+// `VK_ACCESS_TRANSFER_WRITE_BIT` and `VK_ACCESS_TRANSFER_READ_BIT`.
+const ACCESS_TRANSFER_WRITE: Int = 4096
+const ACCESS_TRANSFER_READ: Int = 2048
+
+// `VK_WHOLE_SIZE`, which is the largest unsigned 64-bit value.
+const WHOLE_SIZE: Int = -1
+
+// The size of every buffer this suite creates.
+const BUFFER_BYTES: Int = 256
+
+// A second in nanoseconds, which is how long a fence wait allows.
+const ONE_SECOND: Int = 1000000000
+
+// `VK_FORMAT_R8G8B8A8_UNORM`.
+const FORMAT_R8G8B8A8_UNORM: Int = 37
+
+// Reserve `n` bytes and clear every one of them.  `ptr.alloc` does not
+// clear, and a create-info record must be zero apart from the fields
+// the caller sets.
+fn zeroed(n: Int) -> Int
+    let words = (n + 7) / 8
+    let p = ptr.alloc(words * 8)
+    for i in 0..words
+        ptr.write_word(p + i * 8, 0)
+    return p
+
+// Read the low thirty-two bits of the word at `addr`, unsigned.
+fn u32_at(addr: Int) -> Int
+    return ptr.read_word(addr) & 4294967295
+
+// Create an instance asking for Vulkan 1.0 and nothing else.  Answers
+// the handle, or 0 when the loader refused.
+fn instance() -> Int [io, ffi]
+    let app = zeroed(APPLICATION_INFO_SIZE)
+    ptr.write_i32(app, TYPE_APPLICATION_INFO)
+    ptr.write_i32(app + 40, API_VERSION_1_0)
+    let info = zeroed(INSTANCE_CREATE_INFO_SIZE)
+    ptr.write_i32(info, TYPE_INSTANCE_CREATE_INFO)
+    ptr.write_word(info + 24, app)
+    let slot = ptr.alloc_word()
+    let rc = libvulkan.vk_create_instance(info, 0, slot)
+    let handle = ptr.read_word(slot)
+    ptr.free(slot)
+    ptr.free(info)
+    ptr.free(app)
+    if rc as i32 != SUCCESS
+        return 0
+    return handle
+
+// The first physical device an instance can see, or 0.
+fn first_physical_device(inst: Int) -> Int [io, ffi]
+    let count = ptr.alloc_word()
+    ptr.write_i32(count, 0)
+    let _ = libvulkan.vk_enumerate_physical_devices(inst, count, 0)
+    if u32_at(count) == 0
+        ptr.free(count)
+        return 0
+    ptr.write_i32(count, 1)
+    let devices = ptr.alloc(8)
+    let _ = libvulkan.vk_enumerate_physical_devices(inst, count, devices)
+    let device = ptr.read_word(devices)
+    ptr.free(devices)
+    ptr.free(count)
+    return device
+
+// The index of the first queue family of `pd` that can transfer.
+fn transfer_queue_family(pd: Int) -> Int [io, ffi]
+    let count = ptr.alloc_word()
+    ptr.write_i32(count, 0)
+    libvulkan.vk_get_physical_device_queue_family_properties(pd, count, 0)
+    let n = u32_at(count)
+    let families = ptr.alloc(n * QUEUE_FAMILY_PROPERTIES_SIZE)
+    libvulkan.vk_get_physical_device_queue_family_properties(pd, count, families)
+    var chosen = 0
+    for i in 0..n
+        let flags = u32_at(families + i * QUEUE_FAMILY_PROPERTIES_SIZE)
+        if (flags & QUEUE_TRANSFER) != 0 and chosen == 0
+            chosen = i + 1
+    ptr.free(families)
+    ptr.free(count)
+    return chosen - 1
+
+// The index of the first memory type of `pd` that is host visible and
+// host coherent and allowed by `bits`, or -1.
+fn host_memory_type(pd: Int, allowed: Int) -> Int [io, ffi]
+    let props = zeroed(MEMORY_PROPERTIES_SIZE)
+    libvulkan.vk_get_physical_device_memory_properties(pd, props)
+    let types = u32_at(props)
+    var chosen = 0
+    for i in 0..types
+        let flags = u32_at(props + 4 + i * 8)
+        let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT
+        if (flags & wanted) == wanted and (allowed & bits.shl(1, i)) != 0 and chosen == 0
+            chosen = i + 1
+    ptr.free(props)
+    return chosen - 1
+
+// A logical device over `pd` with one queue of family `family`.
+fn logical_device(pd: Int, family: Int) -> Int [io, ffi]
+    let priority = ptr.alloc(8)
+    ptr.write_word(priority, 0)
+    // A queue priority is a 32-bit float in an array behind a pointer.
+    ptr.write_f32(priority, 1.0)
+    let queue_info = zeroed(DEVICE_QUEUE_CREATE_INFO_SIZE)
+    ptr.write_i32(queue_info, TYPE_DEVICE_QUEUE_CREATE_INFO)
+    ptr.write_i32(queue_info + 20, family)
+    ptr.write_i32(queue_info + 24, 1)
+    ptr.write_word(queue_info + 32, priority)
+    let info = zeroed(DEVICE_CREATE_INFO_SIZE)
+    ptr.write_i32(info, TYPE_DEVICE_CREATE_INFO)
+    ptr.write_i32(info + 20, 1)
+    ptr.write_word(info + 24, queue_info)
+    let slot = ptr.alloc_word()
+    let rc = libvulkan.vk_create_device(pd, info, 0, slot)
+    let device = ptr.read_word(slot)
+    ptr.free(slot)
+    ptr.free(info)
+    ptr.free(queue_info)
+    ptr.free(priority)
+    if rc as i32 != SUCCESS
+        return 0
+    return device
+
+@test
+fn test_the_loader_reports_its_version_and_what_is_installed() [io, ffi]
+    test.case("vkEnumerateInstanceVersion, vkEnumerateInstanceExtensionProperties, vkEnumerateInstanceLayerProperties")
+    let version = ptr.alloc_word()
+    ptr.write_i32(version, 0)
+    test.assert(libvulkan.vk_enumerate_instance_version(version) as i32 == SUCCESS)
+    // The major version is the top ten bits, and every loader is at
+    // least Vulkan 1.0.
+    let packed = u32_at(version)
+    test.assert(bits.shr(packed, 22) >= 1)
+    let count = ptr.alloc_word()
+    ptr.write_i32(count, 0)
+    // A null property buffer asks only for the count.
+    test.assert(libvulkan.vk_enumerate_instance_extension_properties(0, count, 0) as i32
+                == SUCCESS)
+    let n = u32_at(count)
+    test.assert(n > 0)
+    // And then the records themselves, each 260 bytes: a 256-byte
+    // name and a four-byte version.
+    let props = ptr.alloc(n * EXTENSION_PROPERTIES_SIZE)
+    test.assert(libvulkan.vk_enumerate_instance_extension_properties(0, count, props) as i32
+                == SUCCESS)
+    test.assert(str.len(ptr.read_str(props)) > 0)
+    test.assert(u32_at(props + 256) > 0)
+    // A layer that is not installed is reported, not ignored.
+    let name = ptr.alloc(64)
+    let _ = ptr.write_bytes_buf(name, bytes.from_str("VK_LAYER_NOVO_NOT_THERE"))
+    test.assert(libvulkan.vk_enumerate_instance_extension_properties(name, count, 0) as i32
+                == ERROR_LAYER_NOT_PRESENT)
+    // The layers, whose records are 520 bytes each.
+    ptr.write_i32(count, 0)
+    test.assert(libvulkan.vk_enumerate_instance_layer_properties(count, 0) as i32 == SUCCESS)
+    let layers = u32_at(count)
+    if layers > 0
+        let records = ptr.alloc(layers * LAYER_PROPERTIES_SIZE)
+        test.assert(libvulkan.vk_enumerate_instance_layer_properties(count, records) as i32
+                    == SUCCESS)
+        test.assert(str.len(ptr.read_str(records)) > 0)
+        ptr.free(records)
+    ptr.free(name)
+    ptr.free(props)
+    ptr.free(count)
+    ptr.free(version)
+
+@test
+fn test_an_instance_is_created_from_a_record_laid_out_by_hand() [io, ffi]
+    test.case("vkCreateInstance, vkGetInstanceProcAddr, vkDestroyInstance")
+    let inst = instance()
+    test.assert(inst != 0)
+    // The loader answers the address of an entry point it has, and 0
+    // for a name it does not know.  A novo-lang program cannot call
+    // either one.
+    test.assert(libvulkan.vk_get_instance_proc_addr(inst, "vkCreateDevice") != 0)
+    test.assert(libvulkan.vk_get_instance_proc_addr(inst, "vkNoSuchEntryPoint") == 0)
+    libvulkan.vk_destroy_instance(inst, 0)
+
+@test
+fn test_a_physical_device_describes_itself() [io, ffi]
+    test.case("vkEnumeratePhysicalDevices, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceMemoryProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceFormatProperties, vkEnumerateDeviceExtensionProperties")
+    let inst = instance()
+    test.assert(inst != 0)
+    let count = ptr.alloc_word()
+    ptr.write_i32(count, 0)
+    // A machine with no driver answers success with a count of 0.
+    test.assert(libvulkan.vk_enumerate_physical_devices(inst, count, 0) as i32 == SUCCESS)
+    let pd = first_physical_device(inst)
+    if pd == 0
+        libvulkan.vk_destroy_instance(inst, 0)
+        ptr.free(count)
+        return
+    // The properties: five four-byte numbers and then a name.
+    let props = zeroed(PHYSICAL_DEVICE_PROPERTIES_SIZE)
+    libvulkan.vk_get_physical_device_properties(pd, props)
+    test.assert(bits.shr(u32_at(props), 22) >= 1)
+    test.assert(u32_at(props + 8) > 0)
+    // The device type is 0 to 4, and the name is at offset 20.
+    test.assert(u32_at(props + 16) <= 4)
+    test.assert(str.len(ptr.read_str(props + 20)) > 0)
+    // The features: 55 four-byte flags, each 0 or 1.
+    let features = zeroed(PHYSICAL_DEVICE_FEATURES_SIZE)
+    libvulkan.vk_get_physical_device_features(pd, features)
+    test.assert(u32_at(features) <= 1)
+    // The memory types and heaps.
+    let memory = zeroed(MEMORY_PROPERTIES_SIZE)
+    libvulkan.vk_get_physical_device_memory_properties(pd, memory)
+    test.assert(u32_at(memory) > 0)
+    test.assert(u32_at(memory + 260) > 0)
+    test.assert(ptr.read_word(memory + 264) > 0)
+    // The queue families, 24 bytes each.  Every device has at least
+    // one, and at least one of them can transfer.
+    ptr.write_i32(count, 0)
+    libvulkan.vk_get_physical_device_queue_family_properties(pd, count, 0)
+    test.assert(u32_at(count) > 0)
+    let families = ptr.alloc(u32_at(count) * QUEUE_FAMILY_PROPERTIES_SIZE)
+    libvulkan.vk_get_physical_device_queue_family_properties(pd, count, families)
+    test.assert(u32_at(families + 4) > 0)
+    test.assert(transfer_queue_family(pd) >= 0)
+    // What the device can do with one image format.
+    let format = zeroed(FORMAT_PROPERTIES_SIZE)
+    libvulkan.vk_get_physical_device_format_properties(pd, FORMAT_R8G8B8A8_UNORM, format)
+    test.assert(u32_at(format + 4) > 0)
+    // The device's own extensions.
+    ptr.write_i32(count, 0)
+    test.assert(libvulkan.vk_enumerate_device_extension_properties(pd, 0, count, 0) as i32
+                == SUCCESS)
+    test.assert(u32_at(count) > 0)
+    ptr.free(format)
+    ptr.free(families)
+    ptr.free(memory)
+    ptr.free(features)
+    ptr.free(props)
+    ptr.free(count)
+    libvulkan.vk_destroy_instance(inst, 0)
+
+@test
+fn test_a_logical_device_opens_a_queue_and_goes_idle() [io, ffi]
+    test.case("vkCreateDevice, vkGetDeviceQueue, vkGetDeviceProcAddr, vkQueueWaitIdle, vkDeviceWaitIdle, vkDestroyDevice")
+    let inst = instance()
+    let pd = first_physical_device(inst)
+    if pd == 0
+        libvulkan.vk_destroy_instance(inst, 0)
+        return
+    let family = transfer_queue_family(pd)
+    let device = logical_device(pd, family)
+    test.assert(device != 0)
+    test.assert(libvulkan.vk_get_device_proc_addr(device, "vkQueueSubmit") != 0)
+    test.assert(libvulkan.vk_get_device_proc_addr(device, "vkNoSuchEntryPoint") == 0)
+    let slot = ptr.alloc_word()
+    libvulkan.vk_get_device_queue(device, family, 0, slot)
+    let queue = ptr.read_word(slot)
+    test.assert(queue != 0)
+    // A queue with nothing submitted to it is already idle.
+    test.assert(libvulkan.vk_queue_wait_idle(queue) as i32 == SUCCESS)
+    test.assert(libvulkan.vk_device_wait_idle(device) as i32 == SUCCESS)
+    ptr.free(slot)
+    libvulkan.vk_destroy_device(device, 0)
+    libvulkan.vk_destroy_instance(inst, 0)
+
+@test
+fn test_device_memory_is_allocated_mapped_and_read_back() [io, ffi]
+    test.case("vkAllocateMemory, vkMapMemory, vkFlushMappedMemoryRanges, vkInvalidateMappedMemoryRanges, vkGetDeviceMemoryCommitment, vkUnmapMemory, vkFreeMemory")
+    let inst = instance()
+    let pd = first_physical_device(inst)
+    if pd == 0
+        libvulkan.vk_destroy_instance(inst, 0)
+        return
+    let family = transfer_queue_family(pd)
+    let device = logical_device(pd, family)
+    let mtype = host_memory_type(pd, -1)
+    test.assert(mtype >= 0)
+    let info = zeroed(MEMORY_ALLOCATE_INFO_SIZE)
+    ptr.write_i32(info, TYPE_MEMORY_ALLOCATE_INFO)
+    ptr.write_word(info + 16, BUFFER_BYTES)
+    ptr.write_i32(info + 24, mtype)
+    let slot = ptr.alloc_word()
+    test.assert(libvulkan.vk_allocate_memory(device, info, 0, slot) as i32 == SUCCESS)
+    let memory = ptr.read_word(slot)
+    test.assert(memory != 0)
+    // The mapping is an ordinary address the `ptr` module reads and
+    // writes.
+    let mapped_slot = ptr.alloc_word()
+    test.assert(libvulkan.vk_map_memory(device, memory, 0, WHOLE_SIZE, 0, mapped_slot) as i32
+                == SUCCESS)
+    let mapped = ptr.read_word(mapped_slot)
+    test.assert(mapped != 0)
+    let _ = ptr.write_bytes_buf(mapped, bytes.from_str("novo"))
+    test.assert(bytes.to_str(ptr.read_bytes_n(mapped, 4)) == "novo")
+    // A range of a coherent allocation needs no flush, and the calls
+    // are allowed all the same.
+    let range = zeroed(MAPPED_MEMORY_RANGE_SIZE)
+    ptr.write_i32(range, TYPE_MAPPED_MEMORY_RANGE)
+    ptr.write_word(range + 16, memory)
+    ptr.write_word(range + 24, 0)
+    ptr.write_word(range + 32, WHOLE_SIZE)
+    test.assert(libvulkan.vk_flush_mapped_memory_ranges(device, 1, range) as i32 == SUCCESS)
+    test.assert(libvulkan.vk_invalidate_mapped_memory_ranges(device, 1, range) as i32
+                == SUCCESS)
+    // Memory that is not lazily allocated is committed whole.
+    let commitment = ptr.alloc_word()
+    ptr.write_word(commitment, 0)
+    libvulkan.vk_get_device_memory_commitment(device, memory, commitment)
+    test.assert(ptr.read_word(commitment) >= 0)
+    libvulkan.vk_unmap_memory(device, memory)
+    libvulkan.vk_free_memory(device, memory, 0)
+    ptr.free(commitment)
+    ptr.free(range)
+    ptr.free(mapped_slot)
+    ptr.free(slot)
+    ptr.free(info)
+    libvulkan.vk_destroy_device(device, 0)
+    libvulkan.vk_destroy_instance(inst, 0)
+
+@test
+fn test_two_buffers_share_one_allocation() [io, ffi]
+    test.case("vkCreateBuffer, vkGetBufferMemoryRequirements, vkBindBufferMemory, vkDestroyBuffer")
+    let inst = instance()
+    let pd = first_physical_device(inst)
+    if pd == 0
+        libvulkan.vk_destroy_instance(inst, 0)
+        return
+    let family = transfer_queue_family(pd)
+    let device = logical_device(pd, family)
+    let info = zeroed(BUFFER_CREATE_INFO_SIZE)
+    ptr.write_i32(info, TYPE_BUFFER_CREATE_INFO)
+    ptr.write_word(info + 24, BUFFER_BYTES)
+    ptr.write_i32(info + 32, BUFFER_TRANSFER_SRC | BUFFER_TRANSFER_DST)
+    ptr.write_i32(info + 36, 0)
+    let slot = ptr.alloc_word()
+    test.assert(libvulkan.vk_create_buffer(device, info, 0, slot) as i32 == SUCCESS)
+    let src = ptr.read_word(slot)
+    test.assert(libvulkan.vk_create_buffer(device, info, 0, slot) as i32 == SUCCESS)
+    let dst = ptr.read_word(slot)
+    test.assert(src != 0)
+    test.assert(dst != 0)
+    test.assert(src != dst)
+    // The device asks for at least what was requested, and says which
+    // memory types will do.
+    let requirements = zeroed(MEMORY_REQUIREMENTS_SIZE)
+    libvulkan.vk_get_buffer_memory_requirements(device, src, requirements)
+    let size = ptr.read_word(requirements)
+    let align = ptr.read_word(requirements + 8)
+    let bits_allowed = u32_at(requirements + 16)
+    test.assert(size >= BUFFER_BYTES)
+    test.assert(align > 0)
+    test.assert(bits_allowed != 0)
+    // One allocation big enough for both, with the second at an offset
+    // that is a multiple of the alignment.
+    let mtype = host_memory_type(pd, bits_allowed)
+    test.assert(mtype >= 0)
+    let alloc_info = zeroed(MEMORY_ALLOCATE_INFO_SIZE)
+    ptr.write_i32(alloc_info, TYPE_MEMORY_ALLOCATE_INFO)
+    ptr.write_word(alloc_info + 16, size * 2)
+    ptr.write_i32(alloc_info + 24, mtype)
+    test.assert(libvulkan.vk_allocate_memory(device, alloc_info, 0, slot) as i32 == SUCCESS)
+    let memory = ptr.read_word(slot)
+    let offset = (size + align - 1) / align * align
+    test.assert(libvulkan.vk_bind_buffer_memory(device, src, memory, 0) as i32 == SUCCESS)
+    test.assert(libvulkan.vk_bind_buffer_memory(device, dst, memory, offset) as i32
+                == SUCCESS)
+    libvulkan.vk_destroy_buffer(device, dst, 0)
+    libvulkan.vk_destroy_buffer(device, src, 0)
+    libvulkan.vk_free_memory(device, memory, 0)
+    ptr.free(alloc_info)
+    ptr.free(requirements)
+    ptr.free(slot)
+    ptr.free(info)
+    libvulkan.vk_destroy_device(device, 0)
+    libvulkan.vk_destroy_instance(inst, 0)
+
+@test
+fn test_a_recorded_copy_runs_on_the_device_and_a_fence_says_so() [io, ffi]
+    test.case("vkCreateCommandPool, vkAllocateCommandBuffers, vkBeginCommandBuffer, vkCmdCopyBuffer, vkCmdFillBuffer, vkCmdUpdateBuffer, vkCmdPipelineBarrier, vkEndCommandBuffer, vkCreateFence, vkGetFenceStatus, vkQueueSubmit, vkWaitForFences, vkResetFences, vkResetCommandBuffer, vkResetCommandPool, vkFreeCommandBuffers, vkDestroyCommandPool, vkDestroyFence, vkCreateSemaphore, vkDestroySemaphore")
+    let inst = instance()
+    let pd = first_physical_device(inst)
+    if pd == 0
+        libvulkan.vk_destroy_instance(inst, 0)
+        return
+    let family = transfer_queue_family(pd)
+    let device = logical_device(pd, family)
+    let slot = ptr.alloc_word()
+    libvulkan.vk_get_device_queue(device, family, 0, slot)
+    let queue = ptr.read_word(slot)
+
+    // Two buffers in one host-visible allocation.
+    let buffer_info = zeroed(BUFFER_CREATE_INFO_SIZE)
+    ptr.write_i32(buffer_info, TYPE_BUFFER_CREATE_INFO)
+    ptr.write_word(buffer_info + 24, BUFFER_BYTES)
+    ptr.write_i32(buffer_info + 32, BUFFER_TRANSFER_SRC | BUFFER_TRANSFER_DST)
+    ptr.write_i32(buffer_info + 36, 0)
+    let _ = libvulkan.vk_create_buffer(device, buffer_info, 0, slot)
+    let src = ptr.read_word(slot)
+    let _ = libvulkan.vk_create_buffer(device, buffer_info, 0, slot)
+    let dst = ptr.read_word(slot)
+    let requirements = zeroed(MEMORY_REQUIREMENTS_SIZE)
+    libvulkan.vk_get_buffer_memory_requirements(device, src, requirements)
+    let size = ptr.read_word(requirements)
+    let align = ptr.read_word(requirements + 8)
+    let offset = (size + align - 1) / align * align
+    let alloc_info = zeroed(MEMORY_ALLOCATE_INFO_SIZE)
+    ptr.write_i32(alloc_info, TYPE_MEMORY_ALLOCATE_INFO)
+    ptr.write_word(alloc_info + 16, offset + size)
+    ptr.write_i32(alloc_info + 24, host_memory_type(pd, u32_at(requirements + 16)))
+    let _ = libvulkan.vk_allocate_memory(device, alloc_info, 0, slot)
+    let memory = ptr.read_word(slot)
+    let _ = libvulkan.vk_bind_buffer_memory(device, src, memory, 0)
+    let _ = libvulkan.vk_bind_buffer_memory(device, dst, memory, offset)
+    let mapped_slot = ptr.alloc_word()
+    let _ = libvulkan.vk_map_memory(device, memory, 0, WHOLE_SIZE, 0, mapped_slot)
+    let mapped = ptr.read_word(mapped_slot)
+    for i in 0..(offset + size) / 8
+        ptr.write_word(mapped + i * 8, 0)
+    let _ = ptr.write_bytes_buf(mapped, bytes.from_str("novo"))
+
+    // A pool whose command buffers can be reset on their own.
+    let pool_info = zeroed(COMMAND_POOL_CREATE_INFO_SIZE)
+    ptr.write_i32(pool_info, TYPE_COMMAND_POOL_CREATE_INFO)
+    ptr.write_i32(pool_info + 16, POOL_RESET_COMMAND_BUFFER)
+    ptr.write_i32(pool_info + 20, family)
+    test.assert(libvulkan.vk_create_command_pool(device, pool_info, 0, slot) as i32
+                == SUCCESS)
+    let pool = ptr.read_word(slot)
+    let cb_info = zeroed(COMMAND_BUFFER_ALLOCATE_INFO_SIZE)
+    ptr.write_i32(cb_info, TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
+    ptr.write_word(cb_info + 16, pool)
+    ptr.write_i32(cb_info + 24, 0)
+    ptr.write_i32(cb_info + 28, 1)
+    let cb_slot = ptr.alloc_word()
+    test.assert(libvulkan.vk_allocate_command_buffers(device, cb_info, cb_slot) as i32
+                == SUCCESS)
+    let cb = ptr.read_word(cb_slot)
+    test.assert(cb != 0)
+
+    // Record: four bytes copied, four words filled, one word written.
+    let begin_info = zeroed(COMMAND_BUFFER_BEGIN_INFO_SIZE)
+    ptr.write_i32(begin_info, TYPE_COMMAND_BUFFER_BEGIN_INFO)
+    ptr.write_i32(begin_info + 16, ONE_TIME_SUBMIT)
+    test.assert(libvulkan.vk_begin_command_buffer(cb, begin_info) as i32 == SUCCESS)
+    let region = zeroed(BUFFER_COPY_SIZE)
+    ptr.write_word(region, 0)
+    ptr.write_word(region + 8, 0)
+    ptr.write_word(region + 16, 4)
+    libvulkan.vk_cmd_copy_buffer(cb, src, dst, 1, region)
+    libvulkan.vk_cmd_fill_buffer(cb, dst, 16, 16, 305419896)
+    let patch = ptr.alloc(8)
+    ptr.write_word(patch, 0)
+    ptr.write_i32(patch, 1732584193)
+    libvulkan.vk_cmd_update_buffer(cb, dst, 32, 4, patch)
+    let barrier = zeroed(MEMORY_BARRIER_SIZE)
+    ptr.write_i32(barrier, TYPE_MEMORY_BARRIER)
+    ptr.write_i32(barrier + 16, ACCESS_TRANSFER_WRITE)
+    ptr.write_i32(barrier + 20, ACCESS_TRANSFER_READ)
+    libvulkan.vk_cmd_pipeline_barrier(cb, STAGE_TRANSFER, STAGE_TRANSFER, 0, 1, barrier,
+                                      0, 0, 0, 0)
+    test.assert(libvulkan.vk_end_command_buffer(cb) as i32 == SUCCESS)
+
+    // A fence starts unsignalled, and the device signals it.
+    let fence_info = zeroed(FENCE_CREATE_INFO_SIZE)
+    ptr.write_i32(fence_info, TYPE_FENCE_CREATE_INFO)
+    test.assert(libvulkan.vk_create_fence(device, fence_info, 0, slot) as i32 == SUCCESS)
+    let fence = ptr.read_word(slot)
+    test.assert(libvulkan.vk_get_fence_status(device, fence) as i32 == NOT_READY)
+    let submit = zeroed(SUBMIT_INFO_SIZE)
+    ptr.write_i32(submit, TYPE_SUBMIT_INFO)
+    ptr.write_i32(submit + 40, 1)
+    ptr.write_word(submit + 48, cb_slot)
+    test.assert(libvulkan.vk_queue_submit(queue, 1, submit, fence) as i32 == SUCCESS)
+    test.assert(libvulkan.vk_wait_for_fences(device, 1, slot, 1, ONE_SECOND) as i32
+                == SUCCESS)
+    test.assert(libvulkan.vk_get_fence_status(device, fence) as i32 == SUCCESS)
+
+    // The four bytes arrived, the fill is four copies of one word, and
+    // the update is the word that was written.
+    test.assert(bytes.to_str(ptr.read_bytes_n(mapped + offset, 4)) == "novo")
+    test.assert(u32_at(mapped + offset + 16) == 305419896)
+    test.assert(u32_at(mapped + offset + 28) == 305419896)
+    test.assert(u32_at(mapped + offset + 32) == 1732584193)
+
+    // A fence is reset by the host, never by the device.
+    test.assert(libvulkan.vk_reset_fences(device, 1, slot) as i32 == SUCCESS)
+    test.assert(libvulkan.vk_get_fence_status(device, fence) as i32 == NOT_READY)
+
+    // A semaphore is the device-to-device counterpart, and this one is
+    // only created and released.
+    let semaphore_info = zeroed(SEMAPHORE_CREATE_INFO_SIZE)
+    ptr.write_i32(semaphore_info, TYPE_SEMAPHORE_CREATE_INFO)
+    let sem_slot = ptr.alloc_word()
+    test.assert(libvulkan.vk_create_semaphore(device, semaphore_info, 0, sem_slot) as i32
+                == SUCCESS)
+    test.assert(ptr.read_word(sem_slot) != 0)
+    libvulkan.vk_destroy_semaphore(device, ptr.read_word(sem_slot), 0)
+
+    test.assert(libvulkan.vk_reset_command_buffer(cb, 0) as i32 == SUCCESS)
+    test.assert(libvulkan.vk_reset_command_pool(device, pool, 0) as i32 == SUCCESS)
+    libvulkan.vk_free_command_buffers(device, pool, 1, cb_slot)
+    libvulkan.vk_destroy_command_pool(device, pool, 0)
+    libvulkan.vk_destroy_fence(device, fence, 0)
+    libvulkan.vk_unmap_memory(device, memory)
+    libvulkan.vk_destroy_buffer(device, dst, 0)
+    libvulkan.vk_destroy_buffer(device, src, 0)
+    libvulkan.vk_free_memory(device, memory, 0)
+    libvulkan.vk_destroy_device(device, 0)
+    libvulkan.vk_destroy_instance(inst, 0)
+    ptr.free(sem_slot)
+    ptr.free(semaphore_info)
+    ptr.free(submit)
+    ptr.free(fence_info)
+    ptr.free(barrier)
+    ptr.free(patch)
+    ptr.free(region)
+    ptr.free(begin_info)
+    ptr.free(cb_slot)
+    ptr.free(cb_info)
+    ptr.free(pool_info)
+    ptr.free(mapped_slot)
+    ptr.free(alloc_info)
+    ptr.free(requirements)
+    ptr.free(buffer_info)
+    ptr.free(slot)

@@ -1,0 +1,43 @@
+[package]
+name        = "libvulkan-sys"
+version     = "0.1.0"
+description = "Bindings over libvulkan, the Vulkan loader: the instance, the physical device query, the logical device and its queues, device memory and its mapping, buffers, command pools and the transfer commands, and the fences and semaphores, one declaration per C entry point."
+license     = "Apache-2.0"
+
+# NOT a `0.0.x` draft.  An interface release is the shape whose every
+# `pub fn` body is a `todo()`, and every `pub fn` here is an `@ffi`
+# declaration with no body at all — `novo pkg publish` reads that as a
+# release with bodies and refuses a `0.0.x` version for it.
+stability   = "experimental"
+
+# `sys`: the layer for a package that binds one C library and decides
+# nothing of its own.  Every `pub fn` below is an `@ffi` declaration of
+# a function in the Vulkan loader.
+layer       = "sys"
+
+category    = "bindings"
+
+# The one C library.  `libvulkan.so` is what the loader resolves these
+# symbols against; installing this package does not install it, and it
+# does not install a driver either.
+wraps       = "libvulkan"
+
+tags        = ["ffi", "vulkan", "gpu", "graphics", "compute", "device", "bindings"]
+repository  = "https://github.com/novolang/libvulkan-sys"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+[docs.pages]
+"README.md" = "The C entry points of the Vulkan loader, one novo-lang declaration each"
+
+[dependencies]
+# None.  A binding over one C library depends on no novo-lang package.
+
+# The link flag for the `library = "vulkan"` name every declaration in
+# `src/` carries.  `libvulkan-dev` installs
+# `/usr/lib/<arch>/pkgconfig/vulkan.pc`, so pkg-config answers
+# `-lvulkan` on Debian and Ubuntu.  Without the block the default is
+# `-lvulkan`, which is the same flag on a system that put the library
+# somewhere the linker already looks.
+[ffi.vulkan]
+pkg_config = "vulkan"
