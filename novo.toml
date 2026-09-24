@@ -1,13 +1,12 @@
 [package]
 name        = "libvulkan-sys"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "Bindings over libvulkan, the Vulkan loader: the instance, the physical device query, the logical device and its queues, device memory and its mapping, buffers, command pools and the transfer commands, and the fences and semaphores, one declaration per C entry point."
 license     = "Apache-2.0"
 
-# NOT a `0.0.x` draft.  An interface release is the shape whose every
-# `pub fn` body is a `todo()`, and every `pub fn` here is an `@ffi`
-# declaration with no body at all — `novo pkg publish` reads that as a
-# release with bodies and refuses a `0.0.x` version for it.
+# `experimental` because no program outside this repository has used
+# the package yet, and the tests exercise the entry points rather than
+# a consumer's use of them.
 stability   = "experimental"
 
 # `sys`: the layer for a package that binds one C library and decides
@@ -18,7 +17,7 @@ layer       = "sys"
 category    = "bindings"
 
 # The one C library.  `libvulkan.so` is what the loader resolves these
-# symbols against; installing this package does not install it, and it
+# symbols against.  Installing this package does not install it, and it
 # does not install a driver either.
 wraps       = "libvulkan"
 

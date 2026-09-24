@@ -5,6 +5,10 @@ All notable changes to libvulkan-sys are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.1 — 2026-09-24
+
+The documentation and comments in plain prose; no declaration changed.
+
 ## 0.1.0 — 2026-09-16
 
 The first release: fifty entry points of the Vulkan loader, one `@ffi`
